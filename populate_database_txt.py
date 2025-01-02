@@ -1,15 +1,18 @@
 import argparse
 import os
 import shutil
-from langchain.document_loaders.pdf import PyPDFDirectoryLoader
+from langchain_community.document_loaders.pdf import PyPDFDirectoryLoader
+from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
 from get_embedding_function import get_embedding_function
-from langchain.vectorstores.chroma import Chroma
-
+from langchain_community.vectorstores.chroma import Chroma
+import glob
+import tqdm
 
 CHROMA_PATH = "chroma"
-DATA_PATH = "data"
+#DATA_PATH = "/media/pranjal/data/scratch/MIMIC-reports-samples"
+DATA_PATH = "/home/pranjal/MIMIC-reports"
 
 
 def main():
@@ -30,16 +33,25 @@ def main():
 
 
 def load_documents():
-    document_loader = PyPDFDirectoryLoader(DATA_PATH)
+    #documents = glob.glob("/media/pranjal/data/scratch/MIMIC-reports/*")
+    #return documents
+    document_loader = DirectoryLoader(DATA_PATH, show_progress=True, 
+                    use_multithreading=True, max_concurrency=12,
+                    sample_size=10000)
     return document_loader.load()
 
 
 def split_documents(documents: list[Document]):
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=80,
+        chunk_size=200,
+        chunk_overlap=50,
         length_function=len,
         is_separator_regex=False,
+        separators=[
+                    ".", 
+                    "\uff0e",  # Fullwidth full stop
+                    "\u3002",  # Ideographic full stop
+                ]
     )
     return text_splitter.split_documents(documents)
 
@@ -49,7 +61,7 @@ def add_to_chroma(chunks: list[Document]):
     db = Chroma(
         persist_directory=CHROMA_PATH, embedding_function=get_embedding_function()
     )
-    print(db)
+    #print(db)
     # Calculate Page IDs.
     chunks_with_ids = calculate_chunk_ids(chunks)
 
@@ -64,11 +76,13 @@ def add_to_chroma(chunks: list[Document]):
         if chunk.metadata["id"] not in existing_ids:
             new_chunks.append(chunk)
 
+    batch_size = 64
     if len(new_chunks):
         print(f"👉 Adding new documents: {len(new_chunks)}")
         new_chunk_ids = [chunk.metadata["id"] for chunk in new_chunks]
-        db.add_documents(new_chunks, ids=new_chunk_ids)
-        db.persist()
+        for k in tqdm.tqdm(range(0, len(new_chunk_ids), batch_size)):
+            db.add_documents(new_chunks[k:k+batch_size], ids=new_chunk_ids[k:k+batch_size])
+            db.persist()
     else:
         print("✅ No new documents to add")
 
